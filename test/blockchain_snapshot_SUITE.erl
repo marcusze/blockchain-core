@@ -46,48 +46,39 @@ end_per_testcase(_, _Config) ->
 %% TEST CASES
 %%--------------------------------------------------------------------
 basic_test(_Config) ->
-    Ledger = ledger(),
-    case blockchain_ledger_v1:get_h3dex(Ledger) of
+    LedgerA = ledger(),
+    case blockchain_ledger_v1:get_h3dex(LedgerA) of
         #{} ->
-            LedgerBoot = blockchain_ledger_v1:new_context(Ledger),
+            LedgerBoot = blockchain_ledger_v1:new_context(LedgerA),
             blockchain:bootstrap_h3dex(LedgerBoot),
             blockchain_ledger_v1:commit_context(LedgerBoot);
         _ -> ok
     end,
-
-    {ok, Snapshot} = blockchain_ledger_snapshot_v1:snapshot(Ledger, []),
-    true = is_map(Snapshot),
-    false = is_map(maps:get(h3dex, Snapshot)),
-    true = is_list(maps:get(h3dex, Snapshot)),
-
+    {ok, SnapshotA} = blockchain_ledger_snapshot_v1:snapshot(LedgerA, []),
     %% make a dir for the loaded snapshot
     {ok, Dir} = file:get_cwd(),
     PrivDir = filename:join([Dir, "priv"]),
     NewDir = PrivDir ++ "/ledger2/",
     ok = filelib:ensure_dir(NewDir),
 
-    {ok, BinSnap} = blockchain_ledger_snapshot_v1:serialize(Snapshot),
-    Size = byte_size(BinSnap),
-    SHA = blockchain_ledger_snapshot_v1:hash(Snapshot),
+    SnapshotABin = blockchain_ledger_snapshot_v1:serialize(SnapshotA),
+    Size = byte_size(SnapshotABin),
+    SHA = blockchain_ledger_snapshot_v1:hash(SnapshotA),
     ct:pal("size ~p", [Size]),
-
     ct:pal("dir: ~p", [os:cmd("pwd")]),
-
     {ok, BinGen} = file:read_file("../../../../test/genesis"),
-
     GenesisBlock = blockchain_block:deserialize(BinGen),
-
     {ok, Chain} = blockchain:new(NewDir, GenesisBlock, blessed_snapshot, undefined),
+    {ok, SnapshotB} = blockchain_ledger_snapshot_v1:deserialize(SnapshotABin),
+    {ok, LedgerB} = blockchain_ledger_snapshot_v1:import(Chain, SHA, SnapshotB),
+    {ok, SnapshotC} = blockchain_ledger_snapshot_v1:snapshot(LedgerB, []),
 
-    {ok, SnapshotA} = blockchain_ledger_snapshot_v1:deserialize(BinSnap),
-
-    {ok, Ledger1} = blockchain_ledger_snapshot_v1:import(Chain, SHA, SnapshotA),
-    {ok, Snapshot1} = blockchain_ledger_snapshot_v1:snapshot(Ledger1, []),
-
-    ?assertEqual([], blockchain_ledger_snapshot_v1:diff(Snapshot, Snapshot1)),
-
-    ?assertEqual(blockchain_ledger_snapshot_v1:hash(Snapshot),
-                 blockchain_ledger_snapshot_v1:hash(Snapshot1)),
+    ?assertEqual(SnapshotA, SnapshotB),
+    ?assertEqual(SnapshotB, SnapshotC),
+    ?assertEqual(SnapshotC, SnapshotA),
+    ?assertEqual([], blockchain_ledger_snapshot_v1:diff(SnapshotA, SnapshotC)),
+    ?assertEqual(blockchain_ledger_snapshot_v1:hash(SnapshotA),
+                 blockchain_ledger_snapshot_v1:hash(SnapshotC)),
     ok.
 
 

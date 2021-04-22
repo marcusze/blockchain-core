@@ -7,6 +7,8 @@
          serialize/1,
          deserialize/1,
 
+         is_v6/1,
+
          snapshot/2,
          snapshot/3,
          import/3,
@@ -14,6 +16,7 @@
          load_blocks/3,
 
          get_blocks/1,
+         get_h3dex/1,
 
          height/1,
          hash/1,
@@ -22,7 +25,8 @@
         ]).
 
 -export_type([
-    snapshot/0
+    snapshot/0,
+    snapshot_v5/0
 ]).
 
 %% this assumes that everything will have loaded the genesis block
@@ -35,7 +39,7 @@
 %% more permanent and less flexible format, like protobufs, or
 %% cauterize.
 
--type snapshot() ::
+-type snapshot_v5() ::
     #{
         version => v5,
         current_height => non_neg_integer(),
@@ -80,66 +84,53 @@
         oracle_price_list => [blockchain_ledger_oracle_price_entry:oracle_price_entry()]
     }.
 
+-type snapshot_v6() ::
+    {snapshot_v6,
+        [
+          {version           , v6}
+        | {current_height    , non_neg_integer()}
+        | {transaction_fee   ,  non_neg_integer()}
+        | {consensus_members , [libp2p_crypto:pubkey_bin()]}
+        | {election_height   , non_neg_integer()}
+        | {election_epoch    , non_neg_integer()}
+        | {delayed_vars      , [{term(), term()}]} % TODO Be more specific
+        | {threshold_txns    , [term()]} % TODO Be more specific
+        | {master_key        , binary()}
+        | {multi_keys        , [binary()]}
+        | {vars_nonce        , pos_integer()}
+        | {vars              , [term()]} % TODO Be more specific
+        | {gateways          , binary()}
+        | {pocs              , binary()}
+        | {accounts          , binary()}
+        | {dc_accounts       , binary()}
+        | {security_accounts , binary()}
+        | {htlcs             , [term()]} % TODO Be more specific
+        | {ouis              , [term()]} % TODO Be more specific
+        | {subnets           , [term()]} % TODO Be more specific
+        | {oui_counter       , pos_integer()}
+        | {hexes             , [term()]} % TODO Be more specific
+        | {h3dex             , [{integer(), [binary()]}]}
+        | {state_channels    , [term()]} % TODO Be more specific
+        | {blocks            , [blockchain_block:block()]}
+        | {oracle_price      , non_neg_integer()}
+        | {oracle_price_list , [blockchain_ledger_oracle_price_entry:oracle_price_entry()]}
+        ]}.
+
+-type snapshot() :: snapshot_v6().
+
 -spec snapshot(blockchain_ledger_v1:ledger(), [binary()]) ->
     {ok, snapshot()}
     | {error, term()}.  % TODO More-specific than just term()
 snapshot(Ledger0, Blocks) ->
     snapshot(Ledger0, Blocks, delayed).
 
+-spec snapshot(
+    blockchain_ledger_v1:ledger(),
+    [binary()],
+    blockchain_ledger_v1:mode()
+) ->
+    {ok, snapshot()} | {error, term()}.  % TODO More-specific than just term()
 snapshot(Ledger0, Blocks, Mode) ->
-    Parent = self(),
-    Ref = make_ref(),
-    {_Pid, MonitorRef} =
-        spawn_opt(fun ThisFun() ->
-                      Ledger = blockchain_ledger_v1:mode(Mode, Ledger0),
-                      {ok, CurrHeight} = blockchain_ledger_v1:current_height(Ledger),
-                      %% this should not leak a huge amount of atoms
-                      Regname = list_to_atom("snapshot_"++integer_to_list(CurrHeight)),
-                      try register(Regname, self()) of
-                          true ->
-                              Res = generate_snapshot(Ledger0, Blocks, Mode),
-                              %% deliver to the caller
-                              Parent ! {Ref, Res},
-                              %% deliver to anyone else blocking
-                              deliver(Res)
-                      catch error:badarg ->
-                                %% already a snapshot generation running, just attach to that
-                                IntMonitorRef = erlang:monitor(process, Regname),
-                                whereis(Regname) ! {deliver, self(), Ref},
-                                %% wait for the result from the already-running process
-                                receive
-                                    {Ref, Res} ->
-                                        Parent ! {Ref, Res};
-                                    {'DOWN', IntMonitorRef, process, _, noproc} ->
-                                        %% we were unable to attach to an existing process before it terminated
-                                        ThisFun();
-                                    {'DOWN', IntMonitorRef, process, _, killed} ->
-                                        %% the already running process OOMed
-                                        Parent ! {Ref, {error, killed}}
-                                end
-                      end
-              end,
-              [{max_heap_size, application:get_env(blockchain, snapshot_memory_limit, 75) * 1024 * 1024 div erlang:system_info(wordsize)}, {fullsweep_after, 0}, monitor]),
-    receive
-        {Ref, Res} ->
-            Res;
-        {'DOWN', MonitorRef, process, _, killed} ->
-            {error, killed}
-    end.
-
-deliver(Res) ->
-    receive
-        {deliver, Pid, Ref} ->
-            Pid ! {Ref, Res},
-            deliver(Res)
-    after 0 ->
-              ok
-    end.
-
--spec generate_snapshot(blockchain_ledger_v1:ledger(), [binary()], blockchain_ledger_v1:mode()) ->
-      {ok, snapshot()}
-    | {error, term()}.  % TODO More-specific than just term()
-generate_snapshot(Ledger0, Blocks, Mode) ->
     try
         Ledger = blockchain_ledger_v1:mode(Mode, Ledger0),
         {ok, CurrHeight} = blockchain_ledger_v1:current_height(Ledger),
@@ -176,128 +167,108 @@ generate_snapshot(Ledger0, Blocks, Mode) ->
         {ok, OraclePrice} = blockchain_ledger_v1:current_oracle_price(Ledger),
         {ok, OraclePriceList} = blockchain_ledger_v1:current_oracle_price_list(Ledger),
 
-        Snapshot =
-            #{
-              version => v5,
-              current_height => CurrHeight,
-              transaction_fee =>  0,
-              consensus_members => ConsensusMembers,
-
-              election_height => ElectionHeight,
-              election_epoch => ElectionEpoch,
-
-              delayed_vars => DelayedVars,
-              threshold_txns => ThresholdTxns,
-
-              master_key => MasterKey,
-              multi_keys => MultiKeys,
-              vars_nonce => VarsNonce,
-              vars => Vars,
-
-              gateways => Gateways,
-              pocs => PoCs,
-
-              accounts => Accounts,
-              dc_accounts => DCAccounts,
-
-              security_accounts => SecurityAccounts,
-
-              htlcs => HTLCs,
-
-              ouis => OUIs,
-              subnets => Subnets,
-              oui_counter => OUICounter,
-
-              hexes => Hexes,
-              h3dex => H3dex,
-
-              state_channels => StateChannels,
-
-              blocks => Blocks,
-
-              oracle_price => OraclePrice,
-              oracle_price_list => OraclePriceList
-             },
-
+        Pairs =
+            [
+                {version          , v6},
+                {current_height   , CurrHeight},
+                {transaction_fee  ,  0},
+                {consensus_members, ConsensusMembers},
+                {election_height  , ElectionHeight},
+                {election_epoch   , ElectionEpoch},
+                {delayed_vars     , DelayedVars},
+                {threshold_txns   , ThresholdTxns},
+                {master_key       , MasterKey},
+                {multi_keys       , MultiKeys},
+                {vars_nonce       , VarsNonce},
+                {vars             , Vars},
+                {gateways         , Gateways},
+                {pocs             , PoCs},
+                {accounts         , Accounts},
+                {dc_accounts      , DCAccounts},
+                {security_accounts, SecurityAccounts},
+                {htlcs            , HTLCs},
+                {ouis             , OUIs},
+                {subnets          , Subnets},
+                {oui_counter      , OUICounter},
+                {hexes            , Hexes},
+                {h3dex            , H3dex},
+                {state_channels   , StateChannels},
+                {blocks           , Blocks},
+                {oracle_price     , OraclePrice},
+                {oracle_price_list, OraclePriceList}
+             ],
+        Snapshot = {snapshot_v6, Pairs},
         {ok, Snapshot}
     catch C:E:S ->
             {error, {error_taking_snapshot, C, E, S}}
     end.
 
+-spec frame(pos_integer(), binary()) -> binary().
+frame(Vsn, <<Bin/binary>>) ->
+    %% simple framing with version, size, & snap
+    Siz = byte_size(Bin),
+    <<Vsn:8/integer, Siz:32/little-unsigned-integer, Bin/binary>>.
+
+-spec unframe(binary()) -> {pos_integer(), binary()}.
+unframe(<<Vsn:8/integer, Siz:32/little-unsigned-integer, Bin:Siz/binary>>) ->
+    {Vsn, Bin}.
+
 -spec serialize(snapshot()) ->
-    {ok, binary()}.
+    binary().
 serialize(Snapshot) ->
     serialize(Snapshot, blocks).
 
 serialize(Snapshot, BlocksP) ->
-    Snapshot1 = case BlocksP of
-                    blocks ->
-                        Blocks = lists:map(fun(B) when is_tuple(B) ->
-                                                   blockchain_block:serialize(B);
-                                              (B) -> B
-                                           end, maps:get(blocks, Snapshot, [])),
-                        lists:sort(maps:to_list(Snapshot#{blocks => Blocks}));
-                    noblocks -> Snapshot#{blocks => []}
-                end,
-    Bin = term_to_binary(Snapshot1, [{compressed, 9}]),
-    BinSz = byte_size(Bin),
-
-    %% do some simple framing with version, size, & snap
-    Snap = <<5, %% version
-             BinSz:32/little-unsigned-integer, Bin/binary>>,
-    {ok, Snap}.
+    serialize_v6(Snapshot, BlocksP).
 
 serialize_v1(Snapshot, noblocks) ->
     %% NOTE: serialize_v1 only gets called with noblocks
     Snapshot1 = Snapshot#blockchain_snapshot_v1{blocks = []},
-    Bin = term_to_binary(Snapshot1, [{compressed, 9}]),
-    BinSz = byte_size(Bin),
-
-    %% do some simple framing with version, size, & snap
-    Snap = <<1, %% version
-             BinSz:32/little-unsigned-integer, Bin/binary>>,
-    {ok, Snap}.
+    frame(1, term_to_binary(Snapshot1, [{compressed, 9}])).
 
 serialize_v2(Snapshot, noblocks) ->
     %% NOTE: serialize_v2 only gets called with noblocks
     Snapshot1 = Snapshot#blockchain_snapshot_v2{blocks = []},
-    Bin = term_to_binary(Snapshot1, [{compressed, 9}]),
-    BinSz = byte_size(Bin),
-
-    %% do some simple framing with version, size, & snap
-    Snap = <<2, %% version
-             BinSz:32/little-unsigned-integer, Bin/binary>>,
-    {ok, Snap}.
+    frame(2, term_to_binary(Snapshot1, [{compressed, 9}])).
 
 serialize_v3(Snapshot, noblocks) ->
     %% NOTE: serialize_v3 only gets called with noblocks
     Snapshot1 = Snapshot#blockchain_snapshot_v3{blocks = []},
-    Bin = term_to_binary(Snapshot1, [{compressed, 9}]),
-    BinSz = byte_size(Bin),
-
-    %% do some simple framing with version, size, & snap
-    Snap = <<3, %% version
-             BinSz:32/little-unsigned-integer, Bin/binary>>,
-    {ok, Snap}.
+    frame(3, term_to_binary(Snapshot1, [{compressed, 9}])).
 
 serialize_v4(Snapshot, noblocks) ->
     %% NOTE: serialize_v4 only gets called with noblocks
     Snapshot1 = Snapshot#blockchain_snapshot_v4{blocks = []},
-    Bin = term_to_binary(Snapshot1, [{compressed, 9}]),
-    BinSz = byte_size(Bin),
+    frame(4, term_to_binary(Snapshot1, [{compressed, 9}])).
 
-    %% do some simple framing with version, size, & snap
-    Snap = <<4, %% version
-             BinSz:32/little-unsigned-integer, Bin/binary>>,
-    {ok, Snap}.
+serialize_v5(Snapshot, noblocks) ->
+    frame(5, term_to_binary(Snapshot#{blocks => []}, [{compressed, 9}])).
 
+serialize_v6({snapshot_v6, KVL0}, BlocksP) ->
+    Key = blocks,
+    Blocks =
+        case BlocksP of
+            blocks ->
+                    lists:map(
+                        fun (B) when is_tuple(B) ->
+                                blockchain_block:serialize(B);
+                            (B) -> B
+                        end,
+                        % TODO Handle version v5: Snapshot#{blocks => []}
+                        kvl_get(KVL0, Key, [])
+                    );
+            noblocks ->
+                []
+        end,
+    frame(6, kvl_to_bin(kvl_set(KVL0, Key, Blocks))).
 
 -spec deserialize(binary()) ->
       {ok, snapshot()}
     | {error, bad_snapshot_binary}.
-deserialize(<<1,
-              %%SHASz:16/little-unsigned-integer, SHA:SHASz/binary,
-              BinSz:32/little-unsigned-integer, BinSnap:BinSz/binary>>) ->
+deserialize(<<Bin/binary>>) ->
+    deserialize_(unframe(Bin)).
+
+deserialize_({1, <<BinSnap/binary>>}) ->
     try binary_to_term(BinSnap) of
         OldSnapshot ->
             Snapshot = v4_to_v5(v3_to_v4(v2_to_v3(v1_to_v2(OldSnapshot)))),
@@ -305,9 +276,7 @@ deserialize(<<1,
     catch _:_ ->
             {error, bad_snapshot_binary}
     end;
-deserialize(<<2,
-              %%SHASz:16/little-unsigned-integer, SHA:SHASz/binary,
-              BinSz:32/little-unsigned-integer, BinSnap:BinSz/binary>>) ->
+deserialize_({2, <<BinSnap/binary>>}) ->
     try binary_to_term(BinSnap) of
         OldSnapshot ->
             Snapshot = v4_to_v5(v3_to_v4(v2_to_v3(OldSnapshot))),
@@ -315,9 +284,7 @@ deserialize(<<2,
     catch _:_ ->
             {error, bad_snapshot_binary}
     end;
-deserialize(<<3,
-              %%SHASz:16/little-unsigned-integer, SHA:SHASz/binary,
-              BinSz:32/little-unsigned-integer, BinSnap:BinSz/binary>>) ->
+deserialize_({3, <<BinSnap/binary>>}) ->
     try binary_to_term(BinSnap) of
         OldSnapshot ->
             Snapshot = v4_to_v5(v3_to_v4(OldSnapshot)),
@@ -325,9 +292,7 @@ deserialize(<<3,
     catch _:_ ->
             {error, bad_snapshot_binary}
     end;
-deserialize(<<4,
-              %%SHASz:16/little-unsigned-integer, SHA:SHASz/binary,
-              BinSz:32/little-unsigned-integer, BinSnap:BinSz/binary>>) ->
+deserialize_({4, <<BinSnap/binary>>}) ->
     try binary_to_term(BinSnap) of
         OldSnapshot ->
             Snapshot = v4_to_v5(OldSnapshot),
@@ -335,67 +300,79 @@ deserialize(<<4,
     catch _:_ ->
             {error, bad_snapshot_binary}
     end;
-deserialize(<<5,
-              %%SHASz:16/little-unsigned-integer, SHA:SHASz/binary,
-              BinSz:32/little-unsigned-integer, BinSnap:BinSz/binary>>) ->
+deserialize_({5, <<BinSnap/binary>>}) ->
     try maps:from_list(binary_to_term(BinSnap)) of
         #{version := v5} = Snapshot ->
             {ok, Snapshot}
     catch _:_ ->
             {error, bad_snapshot_binary}
-    end.
+    end;
+deserialize_({6, <<Bin/binary>>}) ->
+    {ok, {snapshot_v6, kvl_from_bin(Bin)}}.
 
 %% sha will be stored externally
 -spec import(blockchain:blockchain(), binary(), snapshot()) ->
     {ok, blockchain_ledger_v1:ledger()} | {error, bad_snapshot_checksum}.
-import(Chain, SHA,
-       #{
-         blocks := Blocks
-         } = Snapshot) ->
-    Dir = blockchain:dir(Chain),
-    case hash(Snapshot) == SHA orelse
+import(Chain, SHA0, {snapshot_v6, _}=Snapshot) ->
+    SHA1 = hash(Snapshot),
+    case SHA0 == SHA1 of
+        false ->
+            {error, bad_snapshot_checksum};
+        true ->
+            {ok, import_(Chain, SHA1, Snapshot)}
+    end;
+import(_Chain, SHA, #{version := v5} = Snapshot) ->
+    %% TODO deserialize should handle conversion any->latest
+    case hash_v5(Snapshot) == SHA orelse
         hash_v4(v5_to_v4(Snapshot)) == SHA orelse
         hash_v3(v4_to_v3(v5_to_v4(Snapshot))) == SHA orelse
         hash_v2(v3_to_v2(v4_to_v3(v5_to_v4(Snapshot)))) == SHA orelse
         hash_v1(v2_to_v1(v3_to_v2(v4_to_v3(v5_to_v4(Snapshot))))) == SHA of
         true ->
-            CLedger = blockchain:ledger(Chain),
-            Ledger0 =
-                case catch blockchain_ledger_v1:current_height(CLedger) of
-                    %% nothing in there, proceed
-                    {ok, 1} ->
-                        CLedger;
-                    _ ->
-                        blockchain_ledger_v1:clean(CLedger),
-                        blockchain_ledger_v1:new(Dir)
-                end,
-
-            %% we load up both with the same snapshot here, then sync the next N
-            %% blocks and check that we're valid.
-            [load_into_ledger(Snapshot, Ledger0, Mode)
-             || Mode <- [delayed, active]],
-            load_blocks(Ledger0, Chain, Blocks),
-            case blockchain_ledger_v1:has_aux(Ledger0) of
-                true ->
-                    load_into_ledger(Snapshot, Ledger0, aux),
-                    load_blocks(blockchain_ledger_v1:mode(aux, Ledger0), Chain, Blocks);
-                false ->
-                    ok
-            end,
-            {ok, Curr3} = blockchain_ledger_v1:current_height(Ledger0),
-            lager:info("ledger height is ~p after absorbing blocks", [Curr3]),
-
-            %% store the snapshot if we don't have it already
-            case blockchain:get_snapshot(SHA, Chain) of
-                {ok, _Snap} -> ok;
-                {error, not_found} ->
-                    blockchain:add_snapshot(Snapshot, Chain)
-            end,
-
-            {ok, Ledger0};
+            %{ok, import_(Chain, SHA, Snapshot)};
+            {error, snapshot_v5_import_not_implemented};
         _ ->
             {error, bad_snapshot_checksum}
     end.
+
+-spec import_(blockchain:blockchain(), binary(), snapshot()) ->
+    blockchain_ledger_v1:ledger().
+import_(Chain, SHA, {snapshot_v6, KVL}=Snapshot) ->
+    Get = fun (K) -> kvl_get_exn(KVL, K) end,
+    CLedger = blockchain:ledger(Chain),
+    Dir = blockchain:dir(Chain),
+    Ledger0 =
+        case catch blockchain_ledger_v1:current_height(CLedger) of
+            %% nothing in there, proceed
+            {ok, 1} ->
+                CLedger;
+            _ ->
+                blockchain_ledger_v1:clean(CLedger),
+                blockchain_ledger_v1:new(Dir)
+        end,
+    Blocks = Get(blocks),
+    %% we load up both with the same snapshot here, then sync the next N
+    %% blocks and check that we're valid.
+    [load_into_ledger(Snapshot, Ledger0, Mode)
+     || Mode <- [delayed, active]],
+    load_blocks(Ledger0, Chain, Blocks),
+    case blockchain_ledger_v1:has_aux(Ledger0) of
+        true ->
+            load_into_ledger(Snapshot, Ledger0, aux),
+            load_blocks(blockchain_ledger_v1:mode(aux, Ledger0), Chain, Blocks);
+        false ->
+            ok
+    end,
+    {ok, Curr3} = blockchain_ledger_v1:current_height(Ledger0),
+    lager:info("ledger height is ~p after absorbing blocks", [Curr3]),
+
+    %% store the snapshot if we don't have it already
+    case blockchain:get_snapshot(SHA, Chain) of
+        {ok, _Snap} -> ok;
+        {error, not_found} ->
+            blockchain:add_snapshot(Snapshot, Chain)
+    end,
+    Ledger0.
 
 load_into_ledger(#{
          current_height := CurrHeight,
@@ -468,7 +445,42 @@ load_into_ledger(#{
     ok = blockchain_ledger_v1:load_oracle_price(OraclePrice, Ledger),
     ok = blockchain_ledger_v1:load_oracle_price_list(OraclePriceList, Ledger),
 
-    blockchain_ledger_v1:commit_context(Ledger).
+    blockchain_ledger_v1:commit_context(Ledger);
+load_into_ledger({snapshot_v6, KVL}, L0, Mode) ->
+    Get = fun (K) -> kvl_get_exn(KVL, K) end,
+    L1 = blockchain_ledger_v1:mode(Mode, L0),
+    L = blockchain_ledger_v1:new_context(L1),
+    ok = blockchain_ledger_v1:current_height(Get(current_height), L),
+    ok = blockchain_ledger_v1:consensus_members(Get(consensus_members), L),
+    ok = blockchain_ledger_v1:election_height(Get(election_height), L),
+    ok = blockchain_ledger_v1:election_epoch(Get(election_epoch), L),
+    ok = blockchain_ledger_v1:load_delayed_vars(Get(delayed_vars), L),
+    ok = blockchain_ledger_v1:load_threshold_txns(Get(threshold_txns), L),
+    ok = blockchain_ledger_v1:master_key(Get(master_key), L),
+    ok = blockchain_ledger_v1:multi_keys(Get(multi_keys), L),
+    ok = blockchain_ledger_v1:vars_nonce(Get(vars_nonce), L),
+    ok = blockchain_ledger_v1:load_vars(Get(vars), L),
+
+    ok = blockchain_ledger_v1:load_raw_gateways(Get(gateways), L),
+    ok = blockchain_ledger_v1:load_raw_pocs(Get(pocs), L),
+    ok = blockchain_ledger_v1:load_raw_accounts(Get(accounts), L),
+    ok = blockchain_ledger_v1:load_raw_dc_accounts(Get(dc_accounts), L),
+    ok = blockchain_ledger_v1:load_raw_security_accounts(Get(security_accounts), L),
+
+    ok = blockchain_ledger_v1:load_htlcs(Get(htlcs), L),
+
+    ok = blockchain_ledger_v1:load_ouis(Get(ouis), L),
+    ok = blockchain_ledger_v1:load_subnets(Get(subnets), L),
+    ok = blockchain_ledger_v1:set_oui_counter(Get(oui_counter), L),
+
+    ok = blockchain_ledger_v1:load_hexes(Get(hexes), L),
+    ok = blockchain_ledger_v1:load_h3dex(Get(h3dex), L),
+
+    ok = blockchain_ledger_v1:load_state_channels(Get(state_channels), L),
+
+    ok = blockchain_ledger_v1:load_oracle_price(Get(oracle_price), L),
+    ok = blockchain_ledger_v1:load_oracle_price_list(Get(oracle_price_list), L),
+    blockchain_ledger_v1:commit_context(L).
 
 load_blocks(Ledger, Chain, #{blocks:=Blocks}) ->
     load_blocks(Ledger, Chain, Blocks);
@@ -485,7 +497,7 @@ load_blocks(Ledger0, Chain, Blocks) ->
         [] ->
             %% ignore blocks in testing
             ok;
-        Blocks ->
+        [_|_] ->
             %% just store the head, we'll need it sometimes
             lists:foreach(
               fun(Block0) ->
@@ -528,7 +540,6 @@ load_blocks(Ledger0, Chain, Blocks) ->
     end,
     blockchain_ledger_v1:commit_context(Ledger2).
 
-
 -spec get_blocks(blockchain:blockchain()) ->
     [binary()].
 get_blocks(Chain) ->
@@ -554,28 +565,33 @@ get_blocks(Chain) ->
      end
      || N <- lists:seq(max(?min_height, LoadBlockStart), Height)].
 
-height(#{current_height := Height}) ->
-    Height.
+is_v6({snapshot_v6, _}) -> true;
+is_v6(_) -> false.
 
-hash(#{version := v5} = Snap) ->
-    {ok, BinSnap} = serialize(Snap, noblocks),
-    crypto:hash(sha256, BinSnap).
+get_h3dex({snapshot_v6, KVL}) ->
+    kvl_get_exn(KVL, h3dex).
+
+height({snapshot_v6, KVL}) ->
+    kvl_get_exn(KVL, current_height).
+
+-spec hash(snapshot()) -> binary().
+hash({snapshot_v6, _}=Snap) ->
+    crypto:hash(sha256, serialize_v6(Snap, noblocks)).
 
 hash_v1(#blockchain_snapshot_v1{} = Snap) ->
-    {ok, BinSnap} = serialize_v1(Snap, noblocks),
-    crypto:hash(sha256, BinSnap).
+    crypto:hash(sha256, serialize_v1(Snap, noblocks)).
 
 hash_v2(#blockchain_snapshot_v2{} = Snap) ->
-    {ok, BinSnap} = serialize_v2(Snap, noblocks),
-    crypto:hash(sha256, BinSnap).
+    crypto:hash(sha256, serialize_v2(Snap, noblocks)).
 
 hash_v3(#blockchain_snapshot_v3{} = Snap) ->
-    {ok, BinSnap} = serialize_v3(Snap, noblocks),
-    crypto:hash(sha256, BinSnap).
+    crypto:hash(sha256, serialize_v3(Snap, noblocks)).
 
 hash_v4(#blockchain_snapshot_v4{} = Snap) ->
-    {ok, BinSnap} = serialize_v4(Snap, noblocks),
-    crypto:hash(sha256, BinSnap).
+    crypto:hash(sha256, serialize_v4(Snap, noblocks)).
+
+hash_v5(#{version := v5} = Snap) ->
+    crypto:hash(sha256, serialize_v5(Snap, noblocks)).
 
 v1_to_v2(#blockchain_snapshot_v1{
             previous_snapshot_hash = <<>>,
@@ -1256,16 +1272,7 @@ deserialize_pocs(Values) ->
               end,
               Values).
 
-diff(A, B) ->
-    Fields = lists:sort(maps:keys(A)),
-    Comp = lists:foldl(
-             fun(Field, Acc) ->
-                     AV = maps:get(Field, A),
-                     BV = maps:get(Field, B),
-                     [{Field, AV, BV} | Acc]
-             end,
-             [],
-             Fields),
+diff({snapshot_v6, A}, {snapshot_v6, B}) ->
     lists:foldl(
       fun({Field, AI, BI}, Acc) ->
               case AI == BI of
@@ -1312,7 +1319,7 @@ diff(A, B) ->
               end
       end,
       [],
-      Comp).
+      [{K, V, kvl_get_exn(B, K)} || {K, V} <- A]).
 
 diff_gateways([] , [], Acc) ->
     Acc;
@@ -1407,3 +1414,39 @@ minimize_witnesses(A, B) ->
                           end, [], B1),
             [AMissing | Compare]
     end.
+
+-spec kvl_get_exn([{K, V}], K) -> V.
+kvl_get_exn(KVL, K) ->
+    {value, {K, V}} = lists:keysearch(K, 1, KVL),
+    V.
+
+-spec kvl_get([{K, V}], K, V) -> V.
+kvl_get(KVL, K, Default) ->
+    case lists:keysearch(K, 1, KVL) of
+        {value, {K, V}} -> V;
+        false -> Default
+    end.
+
+-spec kvl_set([{K, V}], K, V) -> [{K, V}].
+kvl_set(KVL, K, V) ->
+    lists:keyreplace(K, 1, KVL, {K, V}).
+
+-spec kvl_from_bin(binary()) ->
+    [{term(), term()}].
+kvl_from_bin(Bin) ->
+    kvl_from_bin(Bin, []).
+
+kvl_from_bin(<<>>, KVL) ->
+    lists:reverse(KVL);
+kvl_from_bin(<<Siz:32/integer-unsigned-little, Bin:Siz/binary, Rest/binary>>, KVL) ->
+    {_, _}=KV = binary_to_term(Bin),
+    kvl_from_bin(Rest, [KV | KVL]).
+
+kvl_to_bin(KVL) ->
+    iolist_to_binary(lists:map(fun kv_to_bin/1, KVL)).
+
+-spec kv_to_bin({_, _}) -> <<_:32,_:_*8>>.
+kv_to_bin({_, _}=KV) ->
+    Bin = term_to_binary(KV),
+    Siz = byte_size(Bin),
+    <<Siz:32/integer-unsigned-little, Bin/binary>>.

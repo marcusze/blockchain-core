@@ -1625,7 +1625,7 @@ add_snapshot(Snapshot, #blockchain{db=DB, snapshots=SnapshotsCF}) ->
         ok = rocksdb:write_batch(DB, Batch0, []),
 
         {ok, Batch} = rocksdb:batch(),
-        {ok, BinSnap} = blockchain_ledger_snapshot_v1:serialize(Snapshot),
+        BinSnap = blockchain_ledger_snapshot_v1:serialize(Snapshot),
         ok = rocksdb:batch_put(Batch, SnapshotsCF, Hash, BinSnap),
         %% lexiographic ordering works better with big endian
         ok = rocksdb:batch_put(Batch, SnapshotsCF, <<Height:64/integer-unsigned-big>>, Hash),

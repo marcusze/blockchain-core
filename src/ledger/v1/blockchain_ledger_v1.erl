@@ -979,6 +979,7 @@ snapshot_gateways(Ledger) ->
                     []
                    )).
 
+-spec snapshot_raw_gateways(ledger()) -> binary().
 snapshot_raw_gateways(Ledger) ->
     AGwsCF = active_gateways_cf(Ledger),
     snapshot_raw(AGwsCF, Ledger).
@@ -4080,26 +4081,40 @@ load_pocs(PoCs, Ledger) ->
       maps:from_list(PoCs)),
     ok.
 
-snapshot_raw(CF, Ledger) ->
-    %% we can just reverse this since rocks folds are lexicographic
-    lists:reverse(
-      cache_fold(
-        Ledger,
-        CF,
-        fun(KV, Acc) ->
-                [KV | Acc]
-        end,
-        []
-       )).
+-spec snapshot_raw(rocksdb:cf_handle(), ledger()) ->
+    binary().
+snapshot_raw(CF, L) ->
+    %% We can just reverse this since rocks folds are lexicographic.
+    %% TODO Why reverse at all? Why do we care about order?
+    kvl_to_bin(lists:reverse(cache_fold(L, CF, fun(KV, KVs) -> [KV | KVs] end, []))).
 
-load_raw(List, CF, Ledger) ->
+-spec load_raw(binary(), rocksdb:cf_handle(), ledger()) -> ok.
+load_raw(<<Bin/binary>>, CF, Ledger) ->
     lists:foreach(
-      fun({Key, Val}) ->
-              cache_put(Ledger, CF, Key, Val)
-      end,
-      List),
+        fun({K, V}) -> cache_put(Ledger, CF, K, V) end,
+        kvl_from_bin(Bin)
+    ),
     ok.
 
+kvl_from_bin(Bin) ->
+    kvl_from_bin(Bin, []).
+
+kvl_from_bin(<<>>, KVL) ->
+    lists:reverse(KVL);
+kvl_from_bin(<<Siz:32/integer-unsigned-little, Bin:Siz/binary, Rest/binary>>, KVL) ->
+    {_, _}=KV = binary_to_term(Bin),
+    kvl_from_bin(Rest, [KV | KVL]).
+
+kvl_to_bin(KVL) ->
+    iolist_to_binary(lists:map(fun kv_to_bin/1, KVL)).
+
+-spec kv_to_bin({_, _}) -> <<_:32,_:_*8>>.
+kv_to_bin({_, _}=KV) ->
+    Bin = term_to_binary(KV),
+    Siz = byte_size(Bin),
+    <<Siz:32/integer-unsigned-little, Bin/binary>>.
+
+-spec snapshot_raw_pocs(ledger()) -> binary().
 snapshot_raw_pocs(Ledger) ->
     PoCsCF = pocs_cf(Ledger),
     snapshot_raw(PoCsCF, Ledger).
@@ -4121,6 +4136,7 @@ load_accounts(Accounts, Ledger) ->
       maps:from_list(Accounts)),
     ok.
 
+-spec snapshot_raw_accounts(ledger()) -> binary().
 snapshot_raw_accounts(Ledger) ->
     EntriesCF = entries_cf(Ledger),
     snapshot_raw(EntriesCF, Ledger).
@@ -4142,6 +4158,7 @@ load_dc_accounts(DCAccounts, Ledger) ->
       maps:from_list(DCAccounts)),
     ok.
 
+-spec snapshot_raw_dc_accounts(ledger()) -> binary().
 snapshot_raw_dc_accounts(Ledger) ->
     EntriesCF = dc_entries_cf(Ledger),
     snapshot_raw(EntriesCF, Ledger).
@@ -4163,6 +4180,7 @@ load_security_accounts(SecAccounts, Ledger) ->
       maps:from_list(SecAccounts)),
     ok.
 
+-spec snapshot_raw_security_accounts(ledger()) -> binary().
 snapshot_raw_security_accounts(Ledger) ->
     EntriesCF = securities_cf(Ledger),
     snapshot_raw(EntriesCF, Ledger).
