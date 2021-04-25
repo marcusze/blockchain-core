@@ -108,7 +108,6 @@
         ]}.
 
 -type key() :: atom().
--type key_int() :: 0..26.
 
 -type snapshot_of_any_version() ::
     #blockchain_snapshot_v1{}
@@ -206,7 +205,7 @@ snapshot(Ledger0, Blocks, Mode) ->
     end.
 
 %% simple framing with version, size, & snap
--spec frame(pos_integer(), iolist() | binary()) -> binary().
+-spec frame(pos_integer(), iolist()) -> binary().
 frame(Vsn, Data) ->
     Siz = iolist_size(Data),
     Frame = [
@@ -976,91 +975,18 @@ kvl_set(KVL, K, V) ->
 kvl_map_vals(F, KVL) ->
     [{K, F(V)} || {K, V} <- KVL].
 
--spec key_to_int(key()) -> key_int().
-key_to_int(K) ->
-    case K of
-        version           -> 0;
-        current_height    -> 1;
-        transaction_fee   -> 2;
-        consensus_members -> 3;
-        election_height   -> 4;
-        election_epoch    -> 5;
-        delayed_vars      -> 6;
-        threshold_txns    -> 7;
-        master_key        -> 8;
-        multi_keys        -> 9;
-        vars_nonce        -> 10;
-        vars              -> 11;
-        htlcs             -> 12;
-        ouis              -> 13;
-        subnets           -> 14;
-        oui_counter       -> 15;
-        hexes             -> 16;
-        h3dex             -> 17;
-        state_channels    -> 18;
-        blocks            -> 19;
-        oracle_price      -> 20;
-        oracle_price_list -> 21;
-        gateways          -> 22;
-        pocs              -> 23;
-        accounts          -> 24;
-        dc_accounts       -> 25;
-        security_accounts -> 26
-    end.
-
--spec int_to_key(key_int()) -> key().
-int_to_key(K) ->
-    case K of
-        0  -> version;
-        1  -> current_height;
-        2  -> transaction_fee;
-        3  -> consensus_members;
-        4  -> election_height;
-        5  -> election_epoch;
-        6  -> delayed_vars;
-        7  -> threshold_txns;
-        8  -> master_key;
-        9  -> multi_keys;
-        10 -> vars_nonce;
-        11 -> vars;
-        12 -> htlcs;
-        13 -> ouis;
-        14 -> subnets;
-        15 -> oui_counter;
-        16 -> hexes;
-        17 -> h3dex;
-        18 -> state_channels;
-        19 -> blocks;
-        20 -> oracle_price;
-        21 -> oracle_price_list;
-        22 -> gateways;
-        23 -> pocs;
-        24 -> accounts;
-        25 -> dc_accounts;
-        26 -> security_accounts
-    end.
-
 -spec serialize_pairs([{key(), term()}]) -> iolist().
 serialize_pairs(Pairs) ->
-    lists:map(
-        fun({K, V}) ->
-            Code = key_to_int(K),
-            Data = serialize_field(K, V),
-            Size = iolist_size(Data),
-            [<<Code:8/integer>>, <<Size:32/little-unsigned-integer>>, Data]
-        end,
-        Pairs
-    ).
+    [bin_pair_to_iolist({term_to_binary(K), serialize_field(K, V)}) || {K, V} <- Pairs].
 
 deserialize_pairs(<<Bin/binary>>) ->
-    deserialize_pairs(Bin, []).
-
-deserialize_pairs(<<>>, Pairs) ->
-    lists:reverse(Pairs);
-deserialize_pairs(<<T:8/integer, Siz:32/little-unsigned-integer, Bin:Siz/binary, Rest/binary>>, Pairs) ->
-    K = int_to_key(T),
-    V = deserialize_field(K, Bin),
-    deserialize_pairs(Rest, [{K, V} | Pairs]).
+    lists:map(
+        fun({K0, V}) ->
+            K = binary_to_term(K0),
+            {K, deserialize_field(K, V)}
+        end,
+        bin_pairs_from_bin(Bin)
+    ).
 
 -spec deserialize_field(key(), binary()) -> term().
 deserialize_field(K, <<Bin/binary>>) ->
@@ -1080,12 +1006,12 @@ serialize_field(K, V) ->
 is_raw_field(Key) ->
     lists:member(Key, [gateways, pocs, accounts, dc_accounts, security_accounts]).
 
--spec bin_pair_to_iolist({binary(), binary()}) -> iolist().
-bin_pair_to_iolist({<<K/binary>>, <<V/binary>>}) ->
+-spec bin_pair_to_iolist({binary(), iolist()}) -> iolist().
+bin_pair_to_iolist({<<K/binary>>, V}) ->
     [
         <<(byte_size(K)):32/little-unsigned-integer>>,
         K,
-        <<(byte_size(V)):32/little-unsigned-integer>>,
+        <<(iolist_size(V)):32/little-unsigned-integer>>,
         V
     ].
 
