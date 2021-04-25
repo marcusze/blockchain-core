@@ -40,9 +40,9 @@
 %% more permanent and less flexible format, like protobufs, or
 %% cauterize.
 
--type snapshot_v5() ::
+-type snapshot_(Version) ::
     #{
-        version           => v5,
+        version           => Version,
         current_height    => non_neg_integer(),
         transaction_fee   =>  non_neg_integer(),
         consensus_members => [libp2p_crypto:pubkey_bin()],
@@ -73,39 +73,9 @@
         security_accounts => [{binary(), binary()}]
     }.
 
--type snapshot_v6() ::
-    {blockchain_snapshot_v6,
-        [
-          {version           , v6}
-        | {current_height    , non_neg_integer()}
-        | {transaction_fee   ,  non_neg_integer()}
-        | {consensus_members , [libp2p_crypto:pubkey_bin()]}
-        | {election_height   , non_neg_integer()}
-        | {election_epoch    , non_neg_integer()}
-        | {delayed_vars      , [{integer(), [{Hash :: term(), TODO :: term()}]}]}  % TODO More specific
-        | {threshold_txns    , [term()]} % TODO Be more specific
-        | {master_key        , binary()}
-        | {multi_keys        , [binary()]}
-        | {vars_nonce        , pos_integer()}
-        | {vars              , [{binary(), term()}]} % TODO What is the term()?
-        | {htlcs             , [{Address :: binary(), blockchain_ledger_htlc_v1:htlc()}]}
-        | {ouis              , [term()]} % TODO Be more specific
-        | {subnets           , [term()]} % TODO Be more specific
-        | {oui_counter       , pos_integer()}
-        | {hexes             , [term()]} % TODO Be more specific
-        | {h3dex             , [{integer(), [binary()]}]}
-        | {state_channels    , [term()]} % TODO Be more specific
-        | {blocks            , [blockchain_block:block()]}
-        | {oracle_price      , non_neg_integer()}
-        | {oracle_price_list , [blockchain_ledger_oracle_price_entry:oracle_price_entry()]}
-
-        %% Raw
-        | {gateways          , [{binary(), binary()}]}
-        | {pocs              , [{binary(), binary()}]}
-        | {accounts          , [{binary(), binary()}]}
-        | {dc_accounts       , [{binary(), binary()}]}
-        | {security_accounts , [{binary(), binary()}]}
-        ]}.
+%% v5 and v6 differ only in serialization format.
+-type snapshot_v5() :: snapshot_(v5).
+-type snapshot_v6() :: snapshot_(v6).
 
 -type key() :: atom().
 
@@ -198,8 +168,7 @@ snapshot(Ledger0, Blocks, Mode) ->
                 {oracle_price     , OraclePrice},
                 {oracle_price_list, OraclePriceList}
              ],
-        Snapshot = {blockchain_snapshot_v6, Pairs},
-        {ok, Snapshot}
+        {ok, maps:from_list(Pairs)}
     catch C:E:S ->
             {error, {error_taking_snapshot, C, E, S}}
     end.
@@ -228,7 +197,8 @@ serialize(Snapshot) ->
 serialize(Snapshot, BlocksP) ->
     serialize_v6(Snapshot, BlocksP).
 
-serialize_v6({blockchain_snapshot_v6, KVL}, BlocksP) ->
+-spec serialize_v6(snapshot_v6(), blocks | noblocks) -> binary().
+serialize_v6(#{version := v6}=Snapshot, BlocksP) ->
     Key = blocks,
     Blocks =
         case BlocksP of
@@ -238,12 +208,13 @@ serialize_v6({blockchain_snapshot_v6, KVL}, BlocksP) ->
                                 blockchain_block:serialize(B);
                             (B) -> B
                         end,
-                        kvl_get(KVL, Key, [])
+                        maps:get(Key, Snapshot, [])
                     );
             noblocks ->
                 []
         end,
-    frame(6, serialize_pairs(kvl_set(KVL, Key, Blocks))).
+    Pairs = maps:to_list(maps:put(Key, Blocks, Snapshot)),
+    frame(6, serialize_pairs(Pairs)).
 
 -spec deserialize(binary()) ->
       {ok, snapshot()}
@@ -258,7 +229,7 @@ deserialize(<<Bin/binary>>) ->
                     #{version := v5} = S = maps:from_list(binary_to_term(Bin1)),
                     S;
                 {6, <<Bin1/binary>>} ->
-                    {blockchain_snapshot_v6, deserialize_pairs(Bin1)}
+                    maps:from_list(deserialize_pairs(Bin1))
             end,
         {ok, upgrade(Snapshot)}
     catch _:_ ->
@@ -268,7 +239,7 @@ deserialize(<<Bin/binary>>) ->
 %% sha will be stored externally
 -spec import(blockchain:blockchain(), binary(), snapshot()) ->
     {ok, blockchain_ledger_v1:ledger()} | {error, bad_snapshot_checksum}.
-import(Chain, SHA0, {blockchain_snapshot_v6, _}=Snapshot) ->
+import(Chain, SHA0, #{version := v6}=Snapshot) ->
     SHA1 = hash(Snapshot),
     case SHA0 == SHA1 of
         false ->
@@ -279,7 +250,7 @@ import(Chain, SHA0, {blockchain_snapshot_v6, _}=Snapshot) ->
 
 -spec import_(blockchain:blockchain(), binary(), snapshot()) ->
     blockchain_ledger_v1:ledger().
-import_(Chain, SHA, {blockchain_snapshot_v6, _}=Snapshot) ->
+import_(Chain, SHA, #{version := v6}=Snapshot) ->
     CLedger = blockchain:ledger(Chain),
     Dir = blockchain:dir(Chain),
     Ledger0 =
@@ -317,8 +288,8 @@ import_(Chain, SHA, {blockchain_snapshot_v6, _}=Snapshot) ->
 -spec load_into_ledger(snapshot(), L, M) -> ok when
     L :: blockchain_ledger_v1:ledger(),
     M :: blockchain_ledger_v1:mode().
-load_into_ledger({blockchain_snapshot_v6, KVL}, L0, Mode) ->
-    Get = fun (K) -> kvl_get_exn(KVL, K) end,
+load_into_ledger(Snapshot, L0, Mode) ->
+    Get = fun (K) -> maps:get(K, Snapshot) end,
     L1 = blockchain_ledger_v1:mode(Mode, L0),
     L = blockchain_ledger_v1:new_context(L1),
     ok = blockchain_ledger_v1:current_height(Get(current_height), L),
@@ -355,8 +326,8 @@ load_into_ledger({blockchain_snapshot_v6, KVL}, L0, Mode) ->
 
 -spec load_blocks(blockchain_ledger_v1:ledger(), blockchain:blockchain(), snapshot()) ->
     ok.
-load_blocks(Ledger0, Chain, {blockchain_snapshot_v6, KVL}) ->
-    Blocks = kvl_get_exn(KVL, blocks),
+load_blocks(Ledger0, Chain, Snapshot) ->
+    Blocks = maps:get(blocks, Snapshot, []),
     %% TODO: it might make more sense to do this block by block?  it will at least be
     %% cheaper to do it that way.
     Ledger2 = blockchain_ledger_v1:new_context(Ledger0),
@@ -437,17 +408,17 @@ get_blocks(Chain) ->
      end
      || N <- lists:seq(max(?min_height, LoadBlockStart), Height)].
 
-is_v6({blockchain_snapshot_v6, _}) -> true;
+is_v6(#{version := v6}) -> true;
 is_v6(_) -> false.
 
-get_h3dex({blockchain_snapshot_v6, KVL}) ->
-    kvl_get_exn(KVL, h3dex).
+get_h3dex(#{h3dex := H3Dex}) ->
+    H3Dex.
 
-height({blockchain_snapshot_v6, KVL}) ->
-    kvl_get_exn(KVL, current_height).
+height(#{current_height := H}) ->
+    H.
 
 -spec hash(snapshot()) -> binary().
-hash({blockchain_snapshot_v6, _}=Snap) ->
+hash(#{version := v6}=Snap) ->
     crypto:hash(sha256, serialize_v6(Snap, noblocks)).
 
 v1_to_v2(#blockchain_snapshot_v1{
@@ -781,8 +752,7 @@ v4_to_v5(#blockchain_snapshot_v4{
 
 -spec v5_to_v6(snapshot_v5()) -> snapshot_v6().
 v5_to_v6(#{version := v5}=V5) ->
-    KVL = kvl_set(maps:to_list(V5), version, v6),
-    {blockchain_snapshot_v6, KVL}.
+    maps:put(version, v6, V5).
 
 -spec upgrade(snapshot_of_any_version()) -> snapshot().
 upgrade(S) ->
@@ -796,14 +766,13 @@ upgrade(S) ->
     end.
 
 -spec version(snapshot_of_any_version()) -> v1 | v2 | v3 | v4 | v5 | v6.
-version({blockchain_snapshot_v6, _}) -> v6;
-version(#{version := v5}           ) -> v5;
-version(#blockchain_snapshot_v4{}  ) -> v4;
-version(#blockchain_snapshot_v3{}  ) -> v3;
-version(#blockchain_snapshot_v2{}  ) -> v2;
-version(#blockchain_snapshot_v1{}  ) -> v1.
+version(#{version := V}          ) -> V;
+version(#blockchain_snapshot_v4{}) -> v4;
+version(#blockchain_snapshot_v3{}) -> v3;
+version(#blockchain_snapshot_v2{}) -> v2;
+version(#blockchain_snapshot_v1{}) -> v1.
 
-diff({blockchain_snapshot_v6, A}, {blockchain_snapshot_v6, B}) ->
+diff(#{}=A, #{}=B) ->
     lists:foldl(
       fun({Field, AI, BI}, Acc) ->
               case AI == BI of
@@ -850,7 +819,7 @@ diff({blockchain_snapshot_v6, A}, {blockchain_snapshot_v6, B}) ->
               end
       end,
       [],
-      [{K, V, kvl_get(B, K, undefined)} || {K, V} <- A]).
+      [{K, V, maps:get(K, B, undefined)} || {K, V} <- maps:to_list(A)]).
 
 diff_gateways([] , [], Acc) ->
     Acc;
@@ -945,22 +914,6 @@ minimize_witnesses(A, B) ->
                           end, [], B1),
             [AMissing | Compare]
     end.
-
--spec kvl_get_exn([{K, V}], K) -> V.
-kvl_get_exn(KVL, K) ->
-    {value, {K, V}} = lists:keysearch(K, 1, KVL),
-    V.
-
--spec kvl_get([{K, V}], K, V) -> V.
-kvl_get(KVL, K, Default) ->
-    case lists:keysearch(K, 1, KVL) of
-        {value, {K, V}} -> V;
-        false -> Default
-    end.
-
--spec kvl_set([{K, V}], K, V) -> [{K, V}].
-kvl_set(KVL, K, V) ->
-    lists:keyreplace(K, 1, KVL, {K, V}).
 
 -spec kvl_map_vals(fun((V1) -> V2), [{K, V1}]) -> [{K, V2}].
 kvl_map_vals(F, KVL) ->
