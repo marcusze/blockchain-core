@@ -1652,7 +1652,7 @@ add_bin_snapshot(BinSnap, Height, Hash, #blockchain{db=DB, snapshots=SnapshotsCF
 
 -spec get_snapshot(blockchain_block:hash() | integer(), blockchain()) ->
                           {ok, blockchain_ledger_snapshot:snapshot()} | {error, any()}.
-get_snapshot(Hash, #blockchain{db=DB, snapshots=SnapshotsCF}) when is_binary(Hash) ->
+get_snapshot(<<Hash/binary>>, #blockchain{db=DB, snapshots=SnapshotsCF}) ->
     case rocksdb:get(DB, SnapshotsCF, Hash, []) of
         {ok, <<"__sentinel__">>} ->
             {error, sentinel};
