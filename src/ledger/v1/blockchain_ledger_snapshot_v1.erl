@@ -249,30 +249,21 @@ serialize_v6({blockchain_snapshot_v6, KVL}, BlocksP) ->
       {ok, snapshot()}
     | {error, bad_snapshot_binary}.
 deserialize(<<Bin/binary>>) ->
-    case deserialize_(unframe(Bin)) of
-        {error, _}=Error ->
-            Error;
-        {ok, Snapshot} ->
-            {ok, upgrade(Snapshot)}
-    end.
-
--spec deserialize_({1..6, binary()}) ->
-    {ok, snapshot_of_any_version()} | {error, bad_snapshot_binary}.
-deserialize_({V, <<BinSnap/binary>>}) when (V >= 1) and (V < 5) ->
     try
-        {ok, binary_to_term(BinSnap)}
+        Snapshot =
+            case unframe(Bin) of
+                {V, <<Bin1/binary>>} when (V >= 1) and (V < 5) ->
+                    binary_to_term(Bin1);
+                {5, <<Bin1/binary>>} ->
+                    #{version := v5} = S = maps:from_list(binary_to_term(Bin1)),
+                    S;
+                {6, <<Bin1/binary>>} ->
+                    {blockchain_snapshot_v6, deserialize_pairs(Bin1)}
+            end,
+        {ok, upgrade(Snapshot)}
     catch _:_ ->
         {error, bad_snapshot_binary}
-    end;
-deserialize_({5, <<BinSnap/binary>>}) ->
-    try maps:from_list(binary_to_term(BinSnap)) of
-        #{version := v5} = Snapshot ->
-            {ok, Snapshot}
-    catch _:_ ->
-            {error, bad_snapshot_binary}
-    end;
-deserialize_({6, <<Bin/binary>>}) ->
-    {ok, {blockchain_snapshot_v6, deserialize_pairs(Bin)}}.
+    end.
 
 %% sha will be stored externally
 -spec import(blockchain:blockchain(), binary(), snapshot()) ->
