@@ -61,26 +61,37 @@ basic_test(_Config) ->
     NewDir = PrivDir ++ "/ledger2/",
     ok = filelib:ensure_dir(NewDir),
 
-    SnapshotABin = blockchain_ledger_snapshot_v1:serialize(SnapshotA),
-    Size = byte_size(SnapshotABin),
-    SHA = blockchain_ledger_snapshot_v1:hash(SnapshotA),
-    ct:pal("size ~p", [Size]),
+    SnapshotAIOList = blockchain_ledger_snapshot_v1:serialize(SnapshotA),
+    SnapshotABin = iolist_to_binary(SnapshotAIOList),
+    HashA = blockchain_ledger_snapshot_v1:hash(SnapshotA),
     ct:pal("dir: ~p", [os:cmd("pwd")]),
     {ok, BinGen} = file:read_file("../../../../test/genesis"),
     GenesisBlock = blockchain_block:deserialize(BinGen),
     {ok, Chain} = blockchain:new(NewDir, GenesisBlock, blessed_snapshot, undefined),
     {ok, SnapshotB} = blockchain_ledger_snapshot_v1:deserialize(SnapshotABin),
-    {ok, LedgerB} = blockchain_ledger_snapshot_v1:import(Chain, SHA, SnapshotB),
+    HashB = blockchain_ledger_snapshot_v1:hash(SnapshotB),
+    ?assertEqual(HashA, HashB),
+    {ok, LedgerB} = blockchain_ledger_snapshot_v1:import(Chain, HashA, SnapshotB),
     {ok, SnapshotC} = blockchain_ledger_snapshot_v1:snapshot(LedgerB, []),
+    HashC = blockchain_ledger_snapshot_v1:hash(SnapshotC),
+    ?assertEqual(HashB, HashC),
 
+    DiffAB = blockchain_ledger_snapshot_v1:diff(SnapshotA, SnapshotB),
+    ct:pal("DiffAB: ~p", [DiffAB]),
+    ?assertEqual([], DiffAB),
     ?assertEqual(SnapshotA, SnapshotB),
+    DiffBC = blockchain_ledger_snapshot_v1:diff(SnapshotB, SnapshotC),
+    ct:pal("DiffBC: ~p", [DiffBC]),
+    ?assertEqual([], DiffBC),
     ?assertEqual(SnapshotB, SnapshotC),
-    ?assertEqual(SnapshotC, SnapshotA),
-    ?assertEqual([], blockchain_ledger_snapshot_v1:diff(SnapshotA, SnapshotC)),
-    ?assertEqual(blockchain_ledger_snapshot_v1:hash(SnapshotA),
-                 blockchain_ledger_snapshot_v1:hash(SnapshotC)),
-    ok.
 
+    ok = blockchain:add_snapshot(SnapshotC, Chain),
+    {ok, SnapshotDBin} = blockchain:get_snapshot(HashC, Chain),
+    {ok, SnapshotD} = blockchain_ledger_snapshot_v1:deserialize(SnapshotDBin),
+    ?assertEqual(SnapshotC, SnapshotD),
+    HashD = blockchain_ledger_snapshot_v1:hash(SnapshotD),
+    ?assertEqual(HashC, HashD),
+    ok.
 
 %% utils
 
