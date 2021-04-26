@@ -185,10 +185,6 @@ frame(Vsn, Data) ->
     %% rocksdb:batch_put crashes with badarg on an iolist payload :(
     iolist_to_binary(Frame).
 
--spec unframe(binary()) -> {pos_integer(), binary()}.
-unframe(<<Vsn:8/integer, Siz:32/little-unsigned-integer, Bin:Siz/binary>>) ->
-    {Vsn, Bin}.
-
 -spec serialize(snapshot()) ->
     binary().
 serialize(Snapshot) ->
@@ -219,17 +215,18 @@ serialize_v6(#{version := v6}=Snapshot, BlocksP) ->
 -spec deserialize(binary()) ->
       {ok, snapshot()}
     | {error, bad_snapshot_binary}.
-deserialize(<<Bin/binary>>) ->
+deserialize(<<Bin0/binary>>) ->
     try
+        <<Vsn:8/integer, Siz:32/little-unsigned-integer, Bin:Siz/binary>> = Bin0,
         Snapshot =
-            case unframe(Bin) of
-                {V, <<Bin1/binary>>} when (V >= 1) and (V < 5) ->
-                    binary_to_term(Bin1);
-                {5, <<Bin1/binary>>} ->
-                    #{version := v5} = S = maps:from_list(binary_to_term(Bin1)),
+            case Vsn of
+                V when (V >= 1) and (V < 5) ->
+                    binary_to_term(Bin);
+                5 ->
+                    #{version := v5} = S = maps:from_list(binary_to_term(Bin)),
                     S;
-                {6, <<Bin1/binary>>} ->
-                    maps:from_list(deserialize_pairs(Bin1))
+                6 ->
+                    maps:from_list(deserialize_pairs(Bin))
             end,
         {ok, upgrade(Snapshot)}
     catch _:_ ->
