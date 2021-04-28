@@ -174,26 +174,20 @@ snapshot(Ledger0, Blocks, Mode) ->
     end.
 
 %% simple framing with version, size, & snap
--spec frame(pos_integer(), iolist()) -> binary().
+-spec frame(pos_integer(), iolist()) -> iolist().
 frame(Vsn, Data) ->
     Siz = iolist_size(Data),
-    Frame = [
-        <<Vsn:8/integer>>,
-        <<Siz:32/little-unsigned-integer>>,
-        Data
-    ],
-    %% rocksdb:batch_put crashes with badarg on an iolist payload :(
-    iolist_to_binary(Frame).
+    [<<Vsn:8/integer>>, <<Siz:32/little-unsigned-integer>>, Data].
 
 -spec serialize(snapshot()) ->
-    binary().
+    iolist().
 serialize(Snapshot) ->
     serialize(Snapshot, blocks).
 
 serialize(Snapshot, BlocksP) ->
     serialize_v6(Snapshot, BlocksP).
 
--spec serialize_v6(snapshot_v6(), blocks | noblocks) -> binary().
+-spec serialize_v6(snapshot_v6(), blocks | noblocks) -> iolist().
 serialize_v6(#{version := v6}=Snapshot, BlocksP) ->
     Key = blocks,
     Blocks =
