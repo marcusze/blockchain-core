@@ -53,3 +53,5 @@
 %% default values for gateways
 -define(DEFAULT_GAIN, 12). %% as dBi * 10
 -define(DEFAULT_ELEVATION, 0). %% as AGL (above ground level) in meters
+
+-define(MHzToHzMultiplier, 1000000). %% Hz -> MHz multiplier
