@@ -102,6 +102,75 @@ snapshot(Ledger0, Blocks) ->
 ) ->
     {ok, snapshot()} | {error, term()}.  % TODO More-specific than just term()
 snapshot(Ledger0, Blocks, Mode) ->
+    Parent = self(),
+    Ref = make_ref(),
+    {_Pid, MonitorRef} =
+        spawn_opt(
+            fun Retry() ->
+                Ledger = blockchain_ledger_v1:mode(Mode, Ledger0),
+                {ok, CurrHeight} = blockchain_ledger_v1:current_height(Ledger),
+                %% this should not leak a huge amount of atoms
+                Regname = list_to_atom("snapshot_"++integer_to_list(CurrHeight)),
+                try register(Regname, self()) of
+                    true ->
+                        Res = generate_snapshot(Ledger0, Blocks, Mode),
+                        %% deliver to the caller
+                        Parent ! {Ref, Res},
+                        %% deliver to anyone else blocking
+                        deliver(Res)
+                catch error:badarg ->
+                    %% already a snapshot generation running, just attach to that
+                    IntMonitorRef = erlang:monitor(process, Regname),
+                    whereis(Regname) ! {deliver, self(), Ref},
+                    %% wait for the result from the already-running process
+                    receive
+                        {Ref, Res} ->
+                            Parent ! {Ref, Res};
+                        {'DOWN', IntMonitorRef, process, _, noproc} ->
+                            %% we were unable to attach to an existing process
+                            %% before it terminated
+                            Retry();
+                        {'DOWN', IntMonitorRef, process, _, killed} ->
+                            %% the already running process OOMed
+                            Parent ! {Ref, {error, killed}}
+                    end
+                end
+            end,
+            [
+                {
+                    max_heap_size,
+                    (fun() ->
+                        Mb = application:get_env(blockchain, snapshot_memory_limit, 75),
+                        Mb * 1024 * 1024 div erlang:system_info(wordsize)
+                    end)()
+                },
+                {fullsweep_after, 0},
+                monitor
+            ]
+        ),
+    receive
+        {Ref, Res} ->
+            Res;
+        {'DOWN', MonitorRef, process, _, killed} ->
+            {error, killed}
+    end.
+
+deliver(Res) ->
+    receive
+        {deliver, Pid, Ref} ->
+            Pid ! {Ref, Res},
+            deliver(Res)
+    after 0 ->
+              ok
+    end.
+
+-spec generate_snapshot(
+    blockchain_ledger_v1:ledger(),
+    [binary()],
+    blockchain_ledger_v1:mode()
+) ->
+    {ok, snapshot()} | {error, term()}.  % TODO More-specific than just term()
+generate_snapshot(Ledger0, Blocks, Mode) ->
     try
         Ledger = blockchain_ledger_v1:mode(Mode, Ledger0),
         {ok, CurrHeight} = blockchain_ledger_v1:current_height(Ledger),
