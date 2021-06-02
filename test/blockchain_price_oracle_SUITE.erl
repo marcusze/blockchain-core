@@ -1355,7 +1355,6 @@ staking_key_mode_mappings_add_full_gateway(Config) ->
     AddGatewayStFee = blockchain_txn_add_gateway_v1:calculate_staking_fee(AddGatewayTx0, Chain),
     %% full gateways costs 40 usd
     ?assertEqual(40 * ?USD_TO_DC, AddGatewayStFee),
-    ?assertEqual(ok, blockchain_txn_payment_v1:is_valid(SignedPaymentTx1, Chain)),
     ct:pal("Add gateway txn fee ~p, staking fee ~p, total: ~p", [AddGatewayTxFee, AddGatewayStFee, AddGatewayTxFee + AddGatewayStFee]),
 
     %% set the fees on the base txn and then sign the various txns
@@ -1437,7 +1436,6 @@ staking_key_mode_mappings_add_nonconsensus_gateway(Config) ->
     AddGatewayStFee = blockchain_txn_add_gateway_v1:calculate_staking_fee(AddGatewayTx0, Chain),
     %% non consensus gateway costs same to add as a full gateway
     ?assertEqual(40 * ?USD_TO_DC, AddGatewayStFee),
-    ?assertEqual(ok, blockchain_txn_payment_v1:is_valid(SignedPaymentTx1, Chain)),
     ct:pal("Add gateway txn fee ~p, staking fee ~p, total: ~p", [AddGatewayTxFee, AddGatewayStFee, AddGatewayTxFee + AddGatewayStFee]),
 
     %% set the fees on the base txn and then sign the various txns
@@ -1518,7 +1516,6 @@ staking_key_mode_mappings_add_light_gateway(Config) ->
     AddGatewayStFee = blockchain_txn_add_gateway_v1:calculate_staking_fee(AddGatewayTx0, Chain),
     %% light gateway costs 20 usd
     ?assertEqual(20 * ?USD_TO_DC, AddGatewayStFee),
-    ?assertEqual(ok, blockchain_txn_payment_v1:is_valid(SignedPaymentTx1, Chain)),
     ct:pal("Add gateway txn fee ~p, staking fee ~p, total: ~p", [AddGatewayTxFee, AddGatewayStFee, AddGatewayTxFee + AddGatewayStFee]),
 
     %% set the fees on the base txn and then sign the various txns
