@@ -237,18 +237,18 @@ do_is_valid_checks(Txn, Chain) ->
                                                     case blockchain_ledger_v1:find_state_channel(ID, Owner, Ledger) of
                                                         {error, not_found} ->
                                                             %% No state channel with this ID for this Owner exists
-                                                            NextLedgerNonce =
+                                                            LedgerNonce =
                                                                 case blockchain_ledger_v1:find_dc_entry(Owner, Ledger) of
                                                                     {error, _} ->
                                                                         %% if we dont have a DC entry then default expected next nonce to 1
-                                                                        1;
+                                                                        0;
                                                                     {ok, Entry} ->
-                                                                        blockchain_ledger_data_credits_entry_v1:nonce(Entry) +1
+                                                                        blockchain_ledger_data_credits_entry_v1:nonce(Entry)
                                                                 end,
                                                                 TxnNonce = ?MODULE:nonce(Txn),
-                                                                case TxnNonce =:= NextLedgerNonce of
+                                                                case TxnNonce =:= LedgerNonce + 1 of
                                                                     false ->
-                                                                        {error, {bad_nonce, {state_channel_open, TxnNonce, NextLedgerNonce}}};
+                                                                        {error, {bad_nonce, {state_channel_open, TxnNonce, LedgerNonce}}};
                                                                     true ->
 
                                                                         AreFeesEnabled = blockchain_ledger_v1:txn_fees_active(Ledger),

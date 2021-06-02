@@ -429,7 +429,7 @@ htlc_payee_redeem_test(Config) ->
 
     % confirm the replay of the previously absorbed txn fails validations
     % as we are reusing the same nonce
-    ?assertEqual({error,{bad_nonce,{create_htlc,1,3}}}, blockchain_txn_create_htlc_v1:is_valid(SignedCreateTx, Chain)),
+    ?assertEqual({error,{bad_nonce,{create_htlc,1,2}}}, blockchain_txn_create_htlc_v1:is_valid(SignedCreateTx, Chain)),
     ok.
 
 htlc_payer_redeem_test(Config) ->
