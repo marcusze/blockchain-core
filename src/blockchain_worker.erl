@@ -917,11 +917,21 @@ start_snapshot_sync(Hash, Height, Swarm, Chain, Peer) ->
                                       %% adjusted either +1 or -1
                                       {ok, ConfigHeight} = application:get_env(blockchain,
                                                                 blessed_snapshot_block_height),
-                                      Url = build_url(BaseUrl, ConfigHeight),
-                                      %% this return snapshot is already deserialized
-                                      {ok, Snap} = attempt_fetch_s3_snapshot(Url),
-                                      lager:info("Successfully downloaded snap from ~p", [Url]),
-                                      blockchain_worker:install_snapshot(Hash, Snap)
+                                      case blockchain:have_snapshot(ConfigHeight, Chain) of
+                                          %% TODO Handle case where we have a snap
+                                          %% but the chain height is less than the snap
+                                          true -> throw({error, already_have_snap, ConfigHeight});
+                                          false ->
+                                              Url = build_url(BaseUrl, ConfigHeight),
+                                              %% this return snapshot is already deserialized
+                                              {ok, Snap} = attempt_fetch_s3_snapshot(Url),
+                                              lager:info("Successfully downloaded snap from ~p", [Url]),
+                                              SnapHeight = blockchain_ledger_snapshot_v1:height(Snap),
+                                              ok = blockchain:add_bin_snapshot(Snap, SnapHeight, Hash, Chain),
+                                              lager:info("Stored snap ~p in rocksdb, attempting install",
+                                                         [SnapHeight]),
+                                              blockchain_worker:install_snapshot(Hash, Snap)
+                                      end
                               end
                           catch
                               _Type:Error:St ->
