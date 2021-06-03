@@ -943,7 +943,7 @@ poc_challengee_reward_unit(WitnessRedundancy, DecayRate, Witnesses) ->
         {N, R} ->
             W = length(Witnesses),
             Unit = poc_reward_tx_unit(R, W, N),
-            {ok, normalize_reward_unit(Unit)}
+            {ok, Unit}
     end.
 
 -spec normalize_reward_unit(Unit :: float()) -> float().
